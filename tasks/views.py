@@ -64,21 +64,30 @@ class TaskViewSet(viewsets.ModelViewSet):
         }
         return Response(stats)
 
-import requests
+import httpx
 import asyncio
+from django.views.decorators.http import require_http_methods
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
+from asgiref.sync import sync_to_async
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
-def external_tasks_view(request):
-    """Sync endpoint that fetches external data and merges with local tasks"""
+async def external_tasks_view(request):
+    """Async endpoint that fetches external data and merges with local tasks"""
     try:
-        response = requests.get('https://jsonplaceholder.typicode.com/todos', timeout=10)
-        external_tasks = response.json()[:5] 
+        # Fetch external data asynchronously
+        async with httpx.AsyncClient() as client:
+            response = await client.get('https://jsonplaceholder.typicode.com/todos', timeout=10.0)
+            external_tasks = response.json()[:5]
         
+        # Fetch local tasks asynchronously  
         user = request.user
         if user.company:
-            local_tasks = Task.objects.filter(company=user.company)[:5]
-            local_tasks_data = TaskSerializer(local_tasks, many=True).data
+            local_tasks = await sync_to_async(list)(
+                Task.objects.filter(company=user.company)[:5]
+            )
+            local_tasks_data = await sync_to_async(lambda: TaskSerializer(local_tasks, many=True).data)()
         else:
             local_tasks_data = []
         
@@ -92,7 +101,8 @@ def external_tasks_view(request):
                     'source': 'external'
                 }
                 for task in external_tasks
-            ]
+            ],
+            'merged_count': len(local_tasks_data) + len(external_tasks)
         }
         
         return Response(merged_data)
